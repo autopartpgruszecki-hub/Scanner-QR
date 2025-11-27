@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <title>Skanner QR – zapis w jednym pliku</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#000000">
 
     <!-- Biblioteka do skanowania QR -->
     <script src="https://unpkg.com/html5-qrcode"></script>
@@ -42,6 +40,10 @@
             margin-top: 8px;
             font-size: 14px;
         }
+        #reset-btn {
+            background-color: #ff4d4d;
+            color: #fff;
+        }
     </style>
 </head>
 <body>
@@ -51,7 +53,7 @@
         <button id="start-btn">Start skanowania</button>
         <button id="stop-btn" disabled>Stop skanowania</button>
         <button id="clear-btn">Wyczyść listę (lokalnie)</button>
-        <button id="reset-scanner-btn" style="background-color: #ff4d4d; color: white;">Reset skanera</button>
+        <button id="reset-btn">Reset skanera</button>
     </div>
 
     <div id="status">Status: nie skanuje</div>
@@ -77,10 +79,10 @@
         const startBtn = document.getElementById("start-btn");
         const stopBtn = document.getElementById("stop-btn");
         const clearBtn = document.getElementById("clear-btn");
+        const resetBtn = document.getElementById("reset-btn");
         const downloadTxtBtn = document.getElementById("download-txt-btn");
         const downloadCsvBtn = document.getElementById("download-csv-btn");
         const statusElement = document.getElementById("status");
-        const resetScannerBtn = document.getElementById("reset-scanner-btn");
 
         // Obiekt skanera
         const html5QrCode = new Html5Qrcode("reader");
@@ -224,63 +226,60 @@
 
         function clearCodes() {
             if (scannedCodes.size === 0) return;
-            if (!confirm("Na pewno usunąć wszystkie zapisane kody z tego telefonu?")) return;
-
+            if (!confirm("Na pewno usunąć wszystkie kody z listy (zostaną nadal w pamięci, dopóki nie zresetujesz skanera)?")) {
+                return;
+            }
             scannedCodes.clear();
-            saveToLocalStorage();
             renderCodesList();
+            updateStatus("lista wyczyszczona (pamięć lokalna NIE zresetowana)");
         }
+
         async function resetScanner() {
-            if (!confirm("Czy na pewno chcesz zresetować skaner i usunąć wszystkie zapisane kody?")) {
+            if (!confirm("Czy na pewno chcesz zresetować skaner i usunąć wszystkie zapisane kody z tego telefonu?")) {
                 return;
             }
 
-            // 1. Zatrzymaj skanowanie
-            try {
-                await html5QrCode.stop();
-            } catch (err) {
-                console.warn("Skaner już był zatrzymany.");
+            // 1. Zatrzymaj skaner, jeśli działa
+            if (scanning) {
+                try {
+                    await html5QrCode.stop();
+                } catch (err) {
+                    console.warn("Skaner już był zatrzymany lub błąd przy stop():", err);
+                }
             }
 
-            // 2. Wyczyść zapisane kody
+            // 2. Wyczyść pamięć danych
             scannedCodes.clear();
-            localStorage.removeItem(STORAGE_KEY);  // usuwa dane z pamięci przeglądarki
+            try {
+                localStorage.removeItem(STORAGE_KEY);
+            } catch (e) {
+                console.error("Błąd przy czyszczeniu localStorage:", e);
+            }
 
-            // 3. Odśwież listę
+            // 3. Odśwież UI
             renderCodesList();
-
-            // 4. Ustaw status i przyciski
             setButtonsState(false);
-            updateStatus("zresetowano");
+            updateStatus("zresetowano (brak zapisanych kodów)");
 
-            alert("Skaner zresetowany!");
+            alert("Skaner został zresetowany, wszystkie zapisane kody usunięte.");
         }
-
 
         // --- PODPIĘCIE PRZYCISKÓW ---
 
         startBtn.addEventListener("click", startScanning);
         stopBtn.addEventListener("click", stopScanning);
         clearBtn.addEventListener("click", clearCodes);
+        resetBtn.addEventListener("click", resetScanner);
         downloadTxtBtn.addEventListener("click", downloadTxt);
         downloadCsvBtn.addEventListener("click", downloadCsv);
 
         window.addEventListener("beforeunload", stopScanning);
 
-        resetScannerBtn.addEventListener("click", resetScanner);
-
-        // --- START: ładowanie zapisanych kodów z "pliku" (localStorage) ---
+        // --- START: ładowanie zapisanych kodów z pamięci ---
 
         loadFromLocalStorage();
         renderCodesList();
         updateStatus("nie skanuje (kody wczytane z pamięci)");
     </script>
-    <script>
-        if ("serviceWorker" in navigator) {
-          navigator.serviceWorker.register("./service-worker.js")
-            .catch(err => console.error("SW registration failed:", err));
-        }
-    </script>
-
 </body>
 </html>
