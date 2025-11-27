@@ -51,6 +51,7 @@
         <button id="start-btn">Start skanowania</button>
         <button id="stop-btn" disabled>Stop skanowania</button>
         <button id="clear-btn">Wyczyść listę (lokalnie)</button>
+        <button id="reset-scanner-btn" style="background-color: #ff4d4d; color: white;">Reset skanera</button>
     </div>
 
     <div id="status">Status: nie skanuje</div>
@@ -79,6 +80,7 @@
         const downloadTxtBtn = document.getElementById("download-txt-btn");
         const downloadCsvBtn = document.getElementById("download-csv-btn");
         const statusElement = document.getElementById("status");
+        const resetScannerBtn = document.getElementById("reset-scanner-btn");
 
         // Obiekt skanera
         const html5QrCode = new Html5Qrcode("reader");
@@ -228,6 +230,32 @@
             saveToLocalStorage();
             renderCodesList();
         }
+        async function resetScanner() {
+            if (!confirm("Czy na pewno chcesz zresetować skaner i usunąć wszystkie zapisane kody?")) {
+                return;
+            }
+
+            // 1. Zatrzymaj skanowanie
+            try {
+                await html5QrCode.stop();
+            } catch (err) {
+                console.warn("Skaner już był zatrzymany.");
+            }
+
+            // 2. Wyczyść zapisane kody
+            scannedCodes.clear();
+            localStorage.removeItem(STORAGE_KEY);  // usuwa dane z pamięci przeglądarki
+
+            // 3. Odśwież listę
+            renderCodesList();
+
+            // 4. Ustaw status i przyciski
+            setButtonsState(false);
+            updateStatus("zresetowano");
+
+            alert("Skaner zresetowany!");
+        }
+
 
         // --- PODPIĘCIE PRZYCISKÓW ---
 
