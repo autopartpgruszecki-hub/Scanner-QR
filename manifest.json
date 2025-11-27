@@ -1,0 +1,9 @@
+{
+  "name": "Scanner QR",
+  "short_name": "Scanner QR",
+  "start_url": "/Scanner-QR/",
+  "scope": "/Scanner-QR/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#000000"
+}
