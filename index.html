@@ -267,6 +267,8 @@
 
         window.addEventListener("beforeunload", stopScanning);
 
+        resetScannerBtn.addEventListener("click", resetScanner);
+
         // --- START: ładowanie zapisanych kodów z "pliku" (localStorage) ---
 
         loadFromLocalStorage();
