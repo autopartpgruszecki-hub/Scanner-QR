@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Skanner QR – zapis w jednym pliku</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Biblioteka do skanowania QR -->
+    <script src="https://unpkg.com/html5-qrcode"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 10px;
+        }
+        #reader {
+            width: 100%;
+            max-width: 400px;
+            margin: 10px auto;
+        }
+        button {
+            margin: 5px 3px;
+            padding: 8px 12px;
+            cursor: pointer;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        #codes-list {
+            margin-top: 15px;
+            padding-left: 20px;
+        }
+        #codes-list li {
+            word-break: break-all;
+            margin-bottom: 3px;
+            font-size: 14px;
+        }
+        #status {
+            margin-top: 8px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <h2>Skanner QR – zapis w jednym pliku</h2>
+
+    <div>
+        <button id="start-btn">Start skanowania</button>
+        <button id="stop-btn" disabled>Stop skanowania</button>
+        <button id="clear-btn">Wyczyść listę (lokalnie)</button>
+    </div>
+
+    <div id="status">Status: nie skanuje</div>
+
+    <div id="reader"></div>
+
+    <h3>Zeskanowane kody (zapisane w telefonie):</h3>
+    <ul id="codes-list"></ul>
+
+    <div>
+        <button id="download-txt-btn">Pobierz TXT (wszystkie kody)</button>
+        <button id="download-csv-btn">Pobierz CSV (Excel)</button>
+    </div>
+
+    <script>
+        // --- KONFIG ---
+        const STORAGE_KEY = "qr_scanned_codes_v1";
+
+        // Kontener na kody - Set, żeby nie powtarzać tych samych
+        const scannedCodes = new Set();
+
+        const codesListElement = document.getElementById("codes-list");
+        const startBtn = document.getElementById("start-btn");
+        const stopBtn = document.getElementById("stop-btn");
+        const clearBtn = document.getElementById("clear-btn");
+        const downloadTxtBtn = document.getElementById("download-txt-btn");
+        const downloadCsvBtn = document.getElementById("download-csv-btn");
+        const statusElement = document.getElementById("status");
+
+        // Obiekt skanera
+        const html5QrCode = new Html5Qrcode("reader");
+        let scanning = false;
+
+        // --- POMOCNICZE ---
+
+        function updateStatus(text) {
+            statusElement.textContent = "Status: " + text;
+        }
+
+        function setButtonsState(isScanning) {
+            scanning = isScanning;
+            startBtn.disabled = isScanning;
+            stopBtn.disabled = !isScanning;
+        }
+
+        function renderCodesList() {
+            codesListElement.innerHTML = "";
+            Array.from(scannedCodes).forEach(code => {
+                const li = document.createElement("li");
+                li.textContent = code;
+                codesListElement.appendChild(li);
+            });
+        }
+
+        function saveToLocalStorage() {
+            const arr = Array.from(scannedCodes);
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
+            } catch (e) {
+                console.error("Błąd zapisu do localStorage:", e);
+            }
+        }
+
+        function loadFromLocalStorage() {
+            try {
+                const json = localStorage.getItem(STORAGE_KEY);
+                if (!json) return;
+                const arr = JSON.parse(json);
+                if (Array.isArray(arr)) {
+                    arr.forEach(code => scannedCodes.add(code));
+                }
+            } catch (e) {
+                console.error("Błąd odczytu z localStorage:", e);
+            }
+        }
+
+        // --- SKANOWANIE ---
+
+        async function startScanning() {
+            if (scanning) return;
+
+            try {
+                const devices = await Html5Qrcode.getCameras();
+                if (!devices || devices.length === 0) {
+                    alert("Nie znaleziono żadnej kamery.");
+                    return;
+                }
+
+                await html5QrCode.start(
+                    { facingMode: "environment" }, // tylna kamera
+                    {
+                        fps: 10,
+                        qrbox: 250
+                    },
+                    qrCodeMessage => {
+                        if (!scannedCodes.has(qrCodeMessage)) {
+                            scannedCodes.add(qrCodeMessage);
+                            saveToLocalStorage();   // zapisujemy do "pliku" w telefonie
+                            renderCodesList();
+                        }
+                    },
+                    errorMessage => {
+                        // ignorujemy błędy pojedynczych klatek
+                    }
+                );
+
+                setButtonsState(true);
+                updateStatus("skanowanie trwa...");
+            } catch (err) {
+                console.error(err);
+                alert("Błąd przy uruchamianiu kamery lub skanera.");
+                setButtonsState(false);
+                updateStatus("błąd skanowania");
+            }
+        }
+
+        async function stopScanning() {
+            if (!scanning) return;
+            try {
+                await html5QrCode.stop();
+            } catch (err) {
+                console.error(err);
+            } finally {
+                setButtonsState(false);
+                updateStatus("zatrzymano");
+            }
+        }
+
+        function downloadFile(content, fileName, mimeType) {
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            URL.revokeObjectURL(url);
+        }
+
+        function downloadTxt() {
+            if (scannedCodes.size === 0) {
+                alert("Brak zeskanowanych kodów.");
+                return;
+            }
+            const text = Array.from(scannedCodes).join("\n");
+            downloadFile(text, "kody_qr.txt", "text/plain;charset=utf-8");
+        }
+
+        function downloadCsv() {
+            if (scannedCodes.size === 0) {
+                alert("Brak zeskanowanych kodów.");
+                return;
+            }
+
+            const rows = [];
+            rows.push("Nr;Kod");
+
+            Array.from(scannedCodes).forEach((code, index) => {
+                const safeCode = '"' + code.replace(/"/g, '""') + '"';
+                rows.push((index + 1) + ";" + safeCode);
+            });
+
+            const csvContent = rows.join("\n");
+            downloadFile(csvContent, "kody_qr.csv", "text/csv;charset=utf-8");
+        }
+
+        function clearCodes() {
+            if (scannedCodes.size === 0) return;
+            if (!confirm("Na pewno usunąć wszystkie zapisane kody z tego telefonu?")) return;
+
+            scannedCodes.clear();
+            saveToLocalStorage();
+            renderCodesList();
+        }
+
+        // --- PODPIĘCIE PRZYCISKÓW ---
+
+        startBtn.addEventListener("click", startScanning);
+        stopBtn.addEventListener("click", stopScanning);
+        clearBtn.addEventListener("click", clearCodes);
+        downloadTxtBtn.addEventListener("click", downloadTxt);
+        downloadCsvBtn.addEventListener("click", downloadCsv);
+
+        window.addEventListener("beforeunload", stopScanning);
+
+        // --- START: ładowanie zapisanych kodów z "pliku" (localStorage) ---
+
+        loadFromLocalStorage();
+        renderCodesList();
+        updateStatus("nie skanuje (kody wczytane z pamięci)");
+    </script>
+</body>
+</html>
