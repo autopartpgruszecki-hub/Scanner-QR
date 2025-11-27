@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <title>Skanner QR – zapis w jednym pliku</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#000000">
 
     <!-- Biblioteka do skanowania QR -->
     <script src="https://unpkg.com/html5-qrcode"></script>
@@ -243,5 +245,12 @@
         renderCodesList();
         updateStatus("nie skanuje (kody wczytane z pamięci)");
     </script>
+    <script>
+        if ("serviceWorker" in navigator) {
+          navigator.serviceWorker.register("./service-worker.js")
+            .catch(err => console.error("SW registration failed:", err));
+        }
+    </script>
+
 </body>
 </html>
