@@ -281,5 +281,13 @@
         renderCodesList();
         updateStatus("nie skanuje (kody wczytane z pamięci)");
     </script>
+    <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./service-worker.js")
+        .then(reg => console.log("Service Worker zarejestrowany:", reg.scope))
+        .catch(err => console.error("Błąd rejestracji Service Workera:", err));
+    }
+    </script>
+
 </body>
 </html>
