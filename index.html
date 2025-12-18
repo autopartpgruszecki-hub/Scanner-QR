@@ -20,10 +20,10 @@
     #torch-btn { background-color: #222; color: #fff; }
     .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
     .hint { font-size: 12px; opacity: 0.8; margin-top: 6px; }
-    .ctrl { margin-top: 8px; }
     label { font-size: 12px; opacity: 0.85; margin-right: 6px; }
     #zoom-wrap { display: none; align-items: center; gap: 8px; }
     #zoom-val { font-size: 12px; opacity: 0.85; min-width: 46px; text-align: right; }
+    code { background: #f3f3f3; padding: 1px 4px; border-radius: 4px; }
   </style>
 </head>
 
@@ -39,11 +39,15 @@
   </div>
 
   <div id="status">Status: nie skanuje</div>
-  <div class="hint">Wskazówka: kamera działa tylko w <b>HTTPS</b> lub <b>http://localhost</b>.</div>
+  <div class="hint">
+    Kamera działa tylko w <b>HTTPS</b> lub <b>http://localhost</b>. Sprawdź w konsoli: <code>isSecureContext</code>.
+  </div>
 
-  <div class="ctrl row">
+  <div class="row" style="margin-top:8px;">
     <label for="camera-select">Kamera:</label>
-    <select id="camera-select" disabled></select>
+    <select id="camera-select" disabled>
+      <option>(Kliknij Start)</option>
+    </select>
 
     <div id="zoom-wrap" class="row">
       <label for="zoom-range">Zoom:</label>
@@ -63,8 +67,8 @@
   </div>
 
   <script>
-    const STORAGE_KEY = "qr_scanned_codes_v7";
-    const CAM_KEY = "qr_camera_deviceId_v1";
+    const STORAGE_KEY = "qr_scanned_codes_v8";
+    const CAM_KEY = "qr_camera_deviceId_v2";
 
     const scannedCodes = new Set();
 
@@ -85,9 +89,9 @@
 
     let scanning = false;
     let torchOn = false;
-    let qr = null;
     let hasTorch = false;
-    let zoomCaps = null; // {min,max,step}
+    let zoomCaps = null;  // {min,max,step}
+    let qr = null;
 
     function setStatus(t) { statusEl.textContent = "Status: " + t; }
     function setButtons(isScanning) {
@@ -95,7 +99,7 @@
       startBtn.disabled = isScanning;
       stopBtn.disabled = !isScanning;
       torchBtn.disabled = !isScanning || !hasTorch;
-      camSelect.disabled = !isScanning; // możesz zmienić kamerę w trakcie (zrestartuje skan)
+      camSelect.disabled = !isScanning; // można zmieniać w trakcie (restart)
     }
 
     function renderList() {
@@ -162,7 +166,65 @@
       }
     }
 
-    async function applyAutofocusAndQuality(qrInstance) {
+    function showErr(e) {
+      const name = e?.name || "UnknownError";
+      const msg  = e?.message || String(e);
+      console.error(e);
+      alert(`${name}\n${msg}`);
+      setStatus(`błąd: ${name}`);
+    }
+
+    async function ensureCameraPermission() {
+      // Wymusza permission, żeby enumerateDevices zwróciło kamery + etykiety
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      stream.getTracks().forEach(t => t.stop());
+    }
+
+    async function populateCameras() {
+      camSelect.innerHTML = "";
+      let devices = [];
+
+      // 1) Preferowane
+      try {
+        devices = await Html5Qrcode.getCameras(); // [{id,label}]
+      } catch {}
+
+      // 2) Fallback
+      if (!devices || !devices.length) {
+        try {
+          const all = await navigator.mediaDevices.enumerateDevices();
+          devices = all
+            .filter(d => d.kind === "videoinput")
+            .map((d, i) => ({ id: d.deviceId, label: d.label || `Kamera ${i + 1}` }));
+        } catch {}
+      }
+
+      if (!devices.length) {
+        camSelect.disabled = true;
+        camSelect.innerHTML = `<option>(Brak listy kamer)</option>`;
+        return false;
+      }
+
+      devices.forEach((d, idx) => {
+        const opt = document.createElement("option");
+        opt.value = d.id;
+        opt.textContent = d.label || `Kamera ${idx + 1}`;
+        camSelect.appendChild(opt);
+      });
+
+      // preferuj zapamiętaną
+      const saved = localStorage.getItem(CAM_KEY);
+      if (saved && devices.some(d => d.id === saved)) {
+        camSelect.value = saved;
+      } else {
+        camSelect.value = devices[0].id;
+      }
+
+      camSelect.disabled = false;
+      return true;
+    }
+
+    async function applyAutofocusQuality(qrInstance) {
       try {
         await qrInstance.applyVideoConstraints({
           width: { ideal: 1280 },
@@ -183,15 +245,14 @@
         const track = qrInstance.getRunningTrack?.();
         const caps = track?.getCapabilities?.() || {};
 
-        // torch
         if ("torch" in caps) hasTorch = true;
 
-        // zoom
         if (caps.zoom) {
           const min = caps.zoom.min ?? 1;
           const max = caps.zoom.max ?? 1;
           const step = caps.zoom.step ?? 0.1;
           zoomCaps = { min, max, step };
+
           zoomRange.min = String(min);
           zoomRange.max = String(max);
           zoomRange.step = String(step);
@@ -199,7 +260,7 @@
           zoomVal.textContent = `${Number(min).toFixed(1)}×`;
           zoomWrap.style.display = "flex";
 
-          // lekki zoom na start (często pomaga z QR)
+          // delikatny zoom na start
           const target = Math.min(max, min + (max - min) * 0.25);
           try {
             await qrInstance.applyVideoConstraints({ advanced: [{ zoom: target }] });
@@ -231,37 +292,10 @@
       } catch {}
     }
 
-    async function populateCameras() {
-      // Żeby dostać nazwy kamer, zwykle trzeba mieć już pozwolenie na kamerę.
-      try {
-        const devices = await Html5Qrcode.getCameras();
-        camSelect.innerHTML = "";
-        devices.forEach((d, idx) => {
-          const opt = document.createElement("option");
-          opt.value = d.id;
-          opt.textContent = d.label || `Kamera ${idx + 1}`;
-          camSelect.appendChild(opt);
-        });
-
-        const saved = localStorage.getItem(CAM_KEY);
-        if (saved && devices.some(d => d.id === saved)) {
-          camSelect.value = saved;
-        } else if (devices.length) {
-          camSelect.value = devices[0].id;
-        }
-      } catch (e) {
-        console.warn("Nie udało się pobrać listy kamer:", e);
-      }
-    }
-
-    async function startWithSelectedCamera() {
+    async function startWithDeviceId(deviceId) {
       if (!qr) qr = new Html5Qrcode("reader");
-
       const config = { fps: 15, qrbox: { width: 320, height: 320 }, disableFlip: true };
 
-      const deviceId = camSelect.value || null;
-
-      // WAŻNE: wybór konkretnej kamery przez deviceId (omija “ultra-wide” jeśli wybierzesz inną)
       const cameraConfig = deviceId
         ? { deviceId: { exact: deviceId } }
         : { facingMode: "environment" };
@@ -273,68 +307,46 @@
       if (scanning) return;
 
       if (!window.isSecureContext) {
-        alert("Brak secure context. Uruchom stronę przez HTTPS lub http://localhost.");
+        alert("Brak HTTPS/localhost. Kamera nie ruszy.");
         setStatus("brak HTTPS/localhost");
         return;
       }
-
       if (typeof Html5Qrcode === "undefined") {
-        alert("Brakuje pliku ./html5-qrcode.min.js (albo nie jest w tym samym folderze co index.html).");
+        alert("Brakuje pliku ./html5-qrcode.min.js obok index.html");
         return;
       }
 
       try {
-        // Najpierw start (żeby dostać permission), potem pobierz listę kamer z labelami:
-        if (!qr) qr = new Html5Qrcode("reader");
-        const config = { fps: 15, qrbox: { width: 320, height: 320 }, disableFlip: true };
+        setStatus("proszę o dostęp do kamery...");
+        await ensureCameraPermission();
 
-        // Start awaryjny: environment (tylna)
-        await qr.start({ facingMode: "environment" }, config, onScanSuccess, () => {});
+        const ok = await populateCameras();
+        if (!ok) {
+          setStatus("brak listy kamer");
+          alert("Nie udało się pobrać listy kamer. Spróbuj w Chrome/Safari (nie w FB/IG/Messenger).");
+          return;
+        }
+
+        // Start od WYBRANEJ (żeby ominąć ultra-wide)
+        await startWithDeviceId(camSelect.value);
+
         setButtons(true);
         setStatus("skanuje");
 
-        await applyAutofocusAndQuality(qr);
+        await applyAutofocusQuality(qr);
         await detectTorchAndZoom(qr);
 
-        // Teraz mamy permission -> pobierz kamery z nazwami i pozwól wybrać
-        await populateCameras();
-        camSelect.disabled = false;
-
-        // Jeśli mamy zapisaną kamerę i NIE jest to ta aktualna, przełącz od razu:
-        const saved = localStorage.getItem(CAM_KEY);
-        if (saved && camSelect.value === saved) {
-          // OK
-        } else if (saved && camSelect.querySelector(`option[value="${saved}"]`)) {
-          camSelect.value = saved;
-        }
-
-        // Restart na wybranej kamerze (żeby ominąć ultra-wide jeśli trzeba)
-        if (camSelect.value) {
-          await stopScanning(false);
-          await startWithSelectedCamera();
-          setButtons(true);
-          setStatus("skanuje");
-          await applyAutofocusAndQuality(qr);
-          await detectTorchAndZoom(qr);
-        }
-
       } catch (e) {
-        console.error(e);
-        const name = e?.name || "UnknownError";
-        const msg  = e?.message || String(e);
         setButtons(false);
-        setStatus(`błąd: ${name}`);
-        alert(`Nie udało się uruchomić kamery.\n\n${name}\n${msg}`);
+        showErr(e);
       }
     }
 
     async function stopScanning(updateUi = true) {
-      if (!scanning && updateUi) return;
+      if (!qr) return;
       try {
-        if (qr) {
-          if (torchOn) { try { await setTorch(qr, false); } catch {} }
-          await qr.stop();
-        }
+        if (torchOn) { try { await setTorch(qr, false); } catch {} }
+        await qr.stop();
       } catch (e) {
         console.warn(e);
       } finally {
@@ -359,22 +371,22 @@
       setStatus("zresetowano");
     }
 
-    // Zmiana kamery w trakcie: zapisz i zrestartuj skan
+    // Zmiana kamery -> restart skanowania na nowej
     camSelect.addEventListener("change", async () => {
       const id = camSelect.value;
       if (id) localStorage.setItem(CAM_KEY, id);
       if (!scanning) return;
+
       try {
         setStatus("przełączam kamerę...");
         await stopScanning(false);
-        await startWithSelectedCamera();
+        await startWithDeviceId(id);
         setButtons(true);
         setStatus("skanuje");
-        await applyAutofocusAndQuality(qr);
+        await applyAutofocusQuality(qr);
         await detectTorchAndZoom(qr);
       } catch (e) {
-        console.error(e);
-        alert("Nie udało się przełączyć kamery: " + (e?.message || e));
+        showErr(e);
         setStatus("błąd przełączania");
       }
     });
