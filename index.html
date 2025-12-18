@@ -5,7 +5,11 @@
   <title>Skanner QR</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <script src="https://unpkg.com/html5-qrcode@2.3.10/minified/html5-qrcode.min.js"></script>
+  <link rel="manifest" href="./manifest.json" />
+  <meta name="theme-color" content="#ffffff" />
+
+  <!-- LOKALNIE, nie z CDN -->
+  <script src="./html5-qrcode.min.js"></script>
 
   <style>
     body { font-family: Arial, sans-serif; margin: 10px; }
@@ -17,7 +21,6 @@
     #status { margin-top: 8px; font-size: 14px; }
     #reset-btn { background-color: #ff4d4d; color: #fff; }
     #torch-btn { background-color: #222; color: #fff; }
-    .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
   </style>
 </head>
 
@@ -33,8 +36,6 @@
   </div>
 
   <div id="status">Status: nie skanuje</div>
-  <div id="debug" class="mono"></div>
-
   <div id="reader"></div>
 
   <h3>Zeskanowane kody:</h3>
@@ -46,7 +47,7 @@
   </div>
 
   <script>
-    const STORAGE_KEY = "qr_scanned_codes_v4";
+    const STORAGE_KEY = "qr_scanned_codes_v5";
     const scannedCodes = new Set();
 
     const elList = document.getElementById("codes-list");
@@ -58,14 +59,11 @@
     const csvBtn = document.getElementById("download-csv-btn");
     const statusEl = document.getElementById("status");
     const torchBtn = document.getElementById("torch-btn");
-    const debugEl = document.getElementById("debug");
 
     let scanning = false;
     let torchOn = false;
 
     function setStatus(t) { statusEl.textContent = "Status: " + t; }
-    function setDebug(t) { debugEl.textContent = t || ""; }
-
     function setButtons(isScanning) {
       scanning = isScanning;
       startBtn.disabled = isScanning;
@@ -82,10 +80,7 @@
       }
     }
 
-    function save() {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify([...scannedCodes]));
-    }
-
+    function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify([...scannedCodes])); }
     function load() {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
@@ -131,132 +126,79 @@
       setStatus("wyczyszczono");
     }
 
-    async function applyQualityHints(html5QrCode) {
-      // Nie każde urządzenie wspiera wszystko — dlatego bez paniki jak się nie uda.
+    async function applyQualityHints(qr) {
       try {
-        await html5QrCode.applyVideoConstraints({
+        await qr.applyVideoConstraints({
           width: { ideal: 1920 },
           height: { ideal: 1080 },
           advanced: [{ focusMode: "continuous" }]
         });
-      } catch (e) {
-        // OK
-      }
+      } catch {}
     }
 
-    function showVideoSettings() {
-      const video = document.querySelector("#reader video");
-      const track = video?.srcObject?.getVideoTracks?.()?.[0];
-      const s = track?.getSettings?.() || {};
-      setDebug("VIDEO SETTINGS:\n" + JSON.stringify(s, null, 2));
-    }
-
-    async function setTorch(html5QrCode, on) {
+    async function setTorch(qr, on) {
       try {
-        await html5QrCode.applyVideoConstraints({ advanced: [{ torch: !!on }] });
+        await qr.applyVideoConstraints({ advanced: [{ torch: !!on }] });
         torchOn = !!on;
         torchBtn.textContent = `Latarka: ${torchOn ? "ON" : "OFF"}`;
-      } catch (e) {
+      } catch {
         torchBtn.disabled = true;
-        alert("Latarka nieobsługiwana na tym urządzeniu.");
+        alert("Latarka nieobsługiwana.");
       }
     }
 
-    // --- najważniejsze: odporne startowanie kamery ---
     async function startScanning() {
       if (scanning) return;
 
       if (typeof Html5Qrcode === "undefined") {
-        alert("Nie wczytała się biblioteka html5-qrcode (sprawdź internet / SW / blokady).");
+        alert("Brakuje pliku ./html5-qrcode.min.js (albo nie jest w tym samym folderze co index.html).");
         return;
       }
 
-      const html5QrCode = new Html5Qrcode("reader");
+      const qr = new Html5Qrcode("reader");
 
-      const config = {
-        fps: 15,
-        qrbox: { width: 320, height: 320 },
-        disableFlip: true
-      };
+      const config = { fps: 15, qrbox: { width: 320, height: 320 }, disableFlip: true };
 
-      const onScanSuccess = (msg) => {
-        if (!scannedCodes.has(msg)) {
-          scannedCodes.add(msg);
-          save();
-          renderList();
-        }
-      };
-
-      // 1) Najpierw: facingMode (najbardziej kompatybilne)
       try {
-        await html5QrCode.start(
-          {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
-          },
+        await qr.start(
+          { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
           config,
-          onScanSuccess,
+          (msg) => {
+            if (!scannedCodes.has(msg)) {
+              scannedCodes.add(msg);
+              save();
+              renderList();
+            }
+          },
           () => {}
         );
 
+        window.__qr = qr;
         setButtons(true);
         setStatus("skanuje");
-        setTimeout(showVideoSettings, 800);
-        await applyQualityHints(html5QrCode);
+        await applyQualityHints(qr);
 
-        // podpinamy torch na aktualnym obiekcie
-        torchBtn.onclick = () => setTorch(html5QrCode, !torchOn);
+        torchBtn.onclick = () => setTorch(qr, !torchOn);
 
-        // zapamiętujemy do stop()
-        window.__qr = html5QrCode;
-        return;
-      } catch (e1) {
-        console.warn("Start facingMode nie wyszedł:", e1);
-      }
-
-      // 2) Fallback: spróbuj deviceId, ale bez "exact" (mniej wywrotek)
-      try {
-        const cams = await Html5Qrcode.getCameras();
-        if (!cams?.length) throw new Error("Brak kamer");
-
-        const camId = cams[cams.length - 1].id; // często tylna jest na końcu
-
-        await html5QrCode.start(
-          { deviceId: camId, width: { ideal: 1920 }, height: { ideal: 1080 } },
-          config,
-          onScanSuccess,
-          () => {}
-        );
-
-        setButtons(true);
-        setStatus("skanuje (deviceId fallback)");
-        setTimeout(showVideoSettings, 800);
-        await applyQualityHints(html5QrCode);
-
-        torchBtn.onclick = () => setTorch(html5QrCode, !torchOn);
-        window.__qr = html5QrCode;
-        return;
-      } catch (e2) {
-        console.error("Start fallback nie wyszedł:", e2);
+      } catch (e) {
+        console.error(e);
         setButtons(false);
         setStatus("błąd");
-        alert("Nie udało się uruchomić kamery. Sprawdź: HTTPS + pozwolenie na kamerę + czy inna apka nie używa kamery.");
+        alert("Nie udało się uruchomić kamery. Sprawdź HTTPS + uprawnienia kamery.");
       }
     }
 
     async function stopScanning() {
       if (!scanning) return;
-      const html5QrCode = window.__qr;
+      const qr = window.__qr;
       try {
-        if (torchOn) { try { await setTorch(html5QrCode, false); } catch {} }
-        await html5QrCode.stop();
+        if (torchOn) { try { await setTorch(qr, false); } catch {} }
+        await qr.stop();
       } catch (e) {
         console.warn(e);
       } finally {
         torchOn = false;
         torchBtn.textContent = "Latarka: OFF";
-        setDebug("");
         setButtons(false);
         setStatus("zatrzymano");
       }
@@ -283,6 +225,11 @@
     load();
     renderList();
     setStatus("nie skanuje (wczytano z pamięci)");
+
+    // SW (opcjonalnie, dla offline)
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./service-worker.js").catch(console.error);
+    }
   </script>
 </body>
 </html>
