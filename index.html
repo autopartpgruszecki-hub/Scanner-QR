@@ -2,7 +2,7 @@
 <html lang="pl">
 <head>
   <meta charset="UTF-8" />
-  <title>Skanner QR</title>
+  <title>Skanner QR / EAN / DataMatrix</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
   <!-- LOKALNIE, nie z CDN -->
@@ -28,7 +28,7 @@
 </head>
 
 <body>
-  <h2>Skanner QR</h2>
+  <h2>Skanner QR / EAN / DataMatrix</h2>
 
   <div class="row">
     <button id="start-btn">Start</button>
@@ -40,10 +40,18 @@
 
   <div id="status">Status: nie skanuje</div>
   <div class="hint">
-    Kamera działa tylko w <b>HTTPS</b> lub <b>http://localhost</b>. Sprawdź w konsoli: <code>isSecureContext</code>.
+    Kamera działa tylko w <b>HTTPS</b> lub <b>http://localhost</b>.
+    Dla 1D (EAN/UPC) trzymaj telefon trochę dalej i złap cały kod w ramkę.
   </div>
 
   <div class="row" style="margin-top:8px;">
+    <label for="mode-select">Tryb:</label>
+    <select id="mode-select">
+      <option value="auto" selected>AUTO (QR + DataMatrix + 1D)</option>
+      <option value="2d">2D (QR + DataMatrix)</option>
+      <option value="1d">1D (EAN/UPC/Code128...)</option>
+    </select>
+
     <label for="camera-select">Kamera:</label>
     <select id="camera-select" disabled>
       <option>(Kliknij Start)</option>
@@ -67,8 +75,8 @@
   </div>
 
   <script>
-    const STORAGE_KEY = "qr_scanned_codes_v8";
-    const CAM_KEY = "qr_camera_deviceId_v2";
+    const STORAGE_KEY = "scanned_codes_v10";
+    const CAM_KEY = "camera_deviceId_v3";
 
     const scannedCodes = new Set();
 
@@ -83,6 +91,8 @@
     const torchBtn = document.getElementById("torch-btn");
 
     const camSelect = document.getElementById("camera-select");
+    const modeSelect = document.getElementById("mode-select");
+
     const zoomWrap = document.getElementById("zoom-wrap");
     const zoomRange = document.getElementById("zoom-range");
     const zoomVal = document.getElementById("zoom-val");
@@ -90,16 +100,18 @@
     let scanning = false;
     let torchOn = false;
     let hasTorch = false;
-    let zoomCaps = null;  // {min,max,step}
+    let zoomCaps = null;
     let qr = null;
 
     function setStatus(t) { statusEl.textContent = "Status: " + t; }
+
     function setButtons(isScanning) {
       scanning = isScanning;
       startBtn.disabled = isScanning;
       stopBtn.disabled = !isScanning;
       torchBtn.disabled = !isScanning || !hasTorch;
-      camSelect.disabled = !isScanning; // można zmieniać w trakcie (restart)
+      camSelect.disabled = !isScanning;
+      modeSelect.disabled = isScanning; // zmiana trybu = restart (robimy przy Stop/Start)
     }
 
     function renderList() {
@@ -112,6 +124,7 @@
     }
 
     function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify([...scannedCodes])); }
+
     function load() {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
@@ -135,7 +148,7 @@
 
     function downloadTxt() {
       if (!scannedCodes.size) return alert("Brak kodów.");
-      downloadFile([...scannedCodes].join("\n"), "kody_qr.txt", "text/plain;charset=utf-8");
+      downloadFile([...scannedCodes].join("\n"), "kody.txt", "text/plain;charset=utf-8");
     }
 
     function downloadCsv() {
@@ -146,7 +159,7 @@
         rows.push(`${i+1};${safe}`);
       });
       const bom = "\uFEFF";
-      downloadFile(bom + rows.join("\n"), "kody_qr.csv", "text/csv;charset=utf-8");
+      downloadFile(bom + rows.join("\n"), "kody.csv", "text/csv;charset=utf-8");
     }
 
     function clearAll() {
@@ -158,9 +171,12 @@
       setStatus("wyczyszczono");
     }
 
-    function onScanSuccess(msg) {
-      if (!scannedCodes.has(msg)) {
-        scannedCodes.add(msg);
+    function onScanSuccess(decodedText /*, decodedResult */) {
+      const entry = String(decodedText).trim();
+      if (!entry) return;
+
+      if (!scannedCodes.has(entry)) {
+        scannedCodes.add(entry);
         save();
         renderList();
       }
@@ -175,7 +191,6 @@
     }
 
     async function ensureCameraPermission() {
-      // Wymusza permission, żeby enumerateDevices zwróciło kamery + etykiety
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       stream.getTracks().forEach(t => t.stop());
     }
@@ -185,9 +200,7 @@
       let devices = [];
 
       // 1) Preferowane
-      try {
-        devices = await Html5Qrcode.getCameras(); // [{id,label}]
-      } catch {}
+      try { devices = await Html5Qrcode.getCameras(); } catch {}
 
       // 2) Fallback
       if (!devices || !devices.length) {
@@ -212,16 +225,33 @@
         camSelect.appendChild(opt);
       });
 
-      // preferuj zapamiętaną
       const saved = localStorage.getItem(CAM_KEY);
-      if (saved && devices.some(d => d.id === saved)) {
-        camSelect.value = saved;
-      } else {
-        camSelect.value = devices[0].id;
-      }
+      if (saved && devices.some(d => d.id === saved)) camSelect.value = saved;
+      else camSelect.value = devices[0].id;
 
       camSelect.disabled = false;
       return true;
+    }
+
+    function getFormatsForMode(mode) {
+      const F = Html5QrcodeSupportedFormats;
+
+      const formats2D = [ F.QR_CODE, F.DATA_MATRIX ];
+      const formats1D = [
+        F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E,
+        F.CODE_128, F.CODE_39, F.ITF
+      ];
+
+      if (mode === "2d") return formats2D;
+      if (mode === "1d") return formats1D;
+      return [...formats2D, ...formats1D]; // auto
+    }
+
+    function getQrboxForMode(mode) {
+      // 2D: kwadrat; 1D: prostokąt poziomy; auto: kompromis (trochę szerszy)
+      if (mode === "2d") return { width: 320, height: 320 };
+      if (mode === "1d") return { width: 380, height: 220 };
+      return { width: 360, height: 260 };
     }
 
     async function applyAutofocusQuality(qrInstance) {
@@ -294,7 +324,17 @@
 
     async function startWithDeviceId(deviceId) {
       if (!qr) qr = new Html5Qrcode("reader");
-      const config = { fps: 15, qrbox: { width: 320, height: 320 }, disableFlip: true };
+
+      const mode = modeSelect.value;
+      const formatsToSupport = getFormatsForMode(mode);
+      const qrbox = getQrboxForMode(mode);
+
+      const config = {
+        fps: 15,
+        qrbox,
+        disableFlip: true,
+        formatsToSupport
+      };
 
       const cameraConfig = deviceId
         ? { deviceId: { exact: deviceId } }
@@ -327,11 +367,10 @@
           return;
         }
 
-        // Start od WYBRANEJ (żeby ominąć ultra-wide)
         await startWithDeviceId(camSelect.value);
 
         setButtons(true);
-        setStatus("skanuje");
+        setStatus(`skanuje (${modeSelect.options[modeSelect.selectedIndex].text})`);
 
         await applyAutofocusQuality(qr);
         await detectTorchAndZoom(qr);
@@ -382,7 +421,7 @@
         await stopScanning(false);
         await startWithDeviceId(id);
         setButtons(true);
-        setStatus("skanuje");
+        setStatus(`skanuje (${modeSelect.options[modeSelect.selectedIndex].text})`);
         await applyAutofocusQuality(qr);
         await detectTorchAndZoom(qr);
       } catch (e) {
@@ -406,6 +445,14 @@
     torchBtn.addEventListener("click", async () => {
       if (!scanning || !qr || !hasTorch) return;
       await setTorch(qr, !torchOn);
+    });
+
+    // Zmiana trybu – wymagamy restartu (żeby zmienić formats/qrbox stabilnie)
+    modeSelect.addEventListener("change", () => {
+      if (scanning) {
+        alert("Zmień tryb po kliknięciu Stop (tryb wpływa na formaty i ramkę skanowania).");
+        modeSelect.value = "auto";
+      }
     });
 
     window.addEventListener("pagehide", () => { try { stopScanning(false); } catch {} });
