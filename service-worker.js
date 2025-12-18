@@ -1,47 +1,32 @@
-const CACHE_NAME = "qr-scanner-cache-v2";
-const ASSETS_TO_CACHE = [
-  "./",
-  "./index.html",
-  "./manifest.json",
+const CACHE_NAME = "qr-scanner-cache-v3";
+const ASSETS = ["./", "./index.html", "./manifest.json"];
 
-  // zewnętrzna biblioteka do QR – też próbujemy cache'ować
-  "https://unpkg.com/html5-qrcode"
-];
-
-self.addEventListener("install", event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => {
-      return cache.addAll(ASSETS_TO_CACHE).catch(err => {
-        console.error("Cache addAll error:", err);
-      });
-    })
-  );
+self.addEventListener("install", (event) => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.addAll(ASSETS);
+    self.skipWaiting();
+  })());
 });
 
-self.addEventListener("activate", event => {
-  event.waitUntil(
-    caches.keys().then(keys => {
-      return Promise.all(
-        keys
-          .filter(key => key !== CACHE_NAME)
-          .map(key => caches.delete(key))
-      );
-    })
-  );
+self.addEventListener("activate", (event) => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)));
+    self.clients.claim();
+  })());
 });
 
-// przechwytywanie wszystkich requestów
-self.addEventListener("fetch", event => {
-  event.respondWith(
-    caches.match(event.request).then(cachedResponse => {
-      // jeśli mamy w cache → użyj
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      // inaczej normalny fetch z sieci
-      return fetch(event.request).catch(() => {
-        // można tu zwrócić stronę awaryjną jeśli chcesz
-      });
-    })
-  );
+self.addEventListener("fetch", (event) => {
+  event.respondWith((async () => {
+    const cached = await caches.match(event.request);
+    if (cached) return cached;
+
+    try {
+      return await fetch(event.request);
+    } catch (e) {
+      if (event.request.mode === "navigate") return caches.match("./index.html");
+      throw e;
+    }
+  })());
 });
