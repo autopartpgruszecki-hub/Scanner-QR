@@ -1,5 +1,10 @@
-const CACHE_NAME = "qr-scanner-cache-v3";
-const ASSETS = ["./", "./index.html", "./manifest.json"];
+const CACHE_NAME = "qr-scanner-cache-v5";
+const ASSETS = [
+  "./",
+  "./index.html",
+  "./manifest.json",
+  "./html5-qrcode.min.js"
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
