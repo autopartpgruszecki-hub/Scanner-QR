@@ -1,293 +1,296 @@
 <!DOCTYPE html>
 <html lang="pl">
 <head>
-    <meta charset="UTF-8">
-    <title>Skanner QR – zapis w jednym pliku</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <title>Skanner QR – zapis w jednym pliku</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-    <!-- Biblioteka do skanowania QR -->
-    <script src="https://unpkg.com/html5-qrcode"></script>
+  <link rel="manifest" href="./manifest.json" />
+  <meta name="theme-color" content="#ffffff" />
 
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 10px;
-        }
-        #reader {
-            width: 100%;
-            max-width: 400px;
-            margin: 10px auto;
-        }
-        button {
-            margin: 5px 3px;
-            padding: 8px 12px;
-            cursor: pointer;
-        }
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        #codes-list {
-            margin-top: 15px;
-            padding-left: 20px;
-        }
-        #codes-list li {
-            word-break: break-all;
-            margin-bottom: 3px;
-            font-size: 14px;
-        }
-        #status {
-            margin-top: 8px;
-            font-size: 14px;
-        }
-        #reset-btn {
-            background-color: #ff4d4d;
-            color: #fff;
-        }
-    </style>
+  <!-- Najlepiej wersjonowany plik (mniej problemów niż "https://unpkg.com/html5-qrcode") -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.10/minified/html5-qrcode.min.js"></script>
+
+  <style>
+    body { font-family: Arial, sans-serif; margin: 10px; }
+    #reader { width: 100%; max-width: 420px; margin: 10px auto; }
+    button { margin: 5px 3px; padding: 8px 12px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #codes-list { margin-top: 15px; padding-left: 20px; }
+    #codes-list li { word-break: break-all; margin-bottom: 3px; font-size: 14px; }
+    #status { margin-top: 8px; font-size: 14px; }
+    #reset-btn { background-color: #ff4d4d; color: #fff; }
+    #torch-btn { background-color: #222; color: #fff; }
+    .small { font-size: 12px; opacity: .8; margin-top: 6px; }
+  </style>
 </head>
+
 <body>
-    <h2>Skanner QR – zapis w jednym pliku</h2>
+  <h2>Skanner QR – zapis w jednym pliku</h2>
 
-    <div>
-        <button id="start-btn">Start skanowania</button>
-        <button id="stop-btn" disabled>Stop skanowania</button>
-        <button id="clear-btn">Wyczyść listę (lokalnie)</button>
-        <button id="reset-btn">Reset skanera</button>
-    </div>
+  <div>
+    <button id="start-btn">Start skanowania</button>
+    <button id="stop-btn" disabled>Stop skanowania</button>
+    <button id="torch-btn" disabled>Latarka: OFF</button>
+    <button id="clear-btn">Wyczyść listę</button>
+    <button id="reset-btn">Reset skanera</button>
+  </div>
 
-    <div id="status">Status: nie skanuje</div>
+  <div id="status">Status: nie skanuje</div>
+  <div class="small">
+    Tip: dla ostrości trzymaj kod ~15–30 cm od kamery, nie zasłaniaj światła, nie rozciągaj podglądu na cały ekran.
+  </div>
 
-    <div id="reader"></div>
+  <div id="reader"></div>
 
-    <h3>Zeskanowane kody (zapisane w telefonie):</h3>
-    <ul id="codes-list"></ul>
+  <h3>Zeskanowane kody (zapisane w telefonie):</h3>
+  <ul id="codes-list"></ul>
 
-    <div>
-        <button id="download-txt-btn">Pobierz TXT (wszystkie kody)</button>
-        <button id="download-csv-btn">Pobierz CSV (Excel)</button>
-    </div>
+  <div>
+    <button id="download-txt-btn">Pobierz TXT</button>
+    <button id="download-csv-btn">Pobierz CSV (Excel)</button>
+  </div>
 
-    <script>
-        // --- KONFIG ---
-        const STORAGE_KEY = "qr_scanned_codes_v1";
+  <script>
+    // --- KONFIG ---
+    const STORAGE_KEY = "qr_scanned_codes_v2";
 
-        // Kontener na kody - Set, żeby nie powtarzać tych samych
-        const scannedCodes = new Set();
+    // Set żeby nie duplikować
+    const scannedCodes = new Set();
 
-        const codesListElement = document.getElementById("codes-list");
-        const startBtn = document.getElementById("start-btn");
-        const stopBtn = document.getElementById("stop-btn");
-        const clearBtn = document.getElementById("clear-btn");
-        const resetBtn = document.getElementById("reset-btn");
-        const downloadTxtBtn = document.getElementById("download-txt-btn");
-        const downloadCsvBtn = document.getElementById("download-csv-btn");
-        const statusElement = document.getElementById("status");
+    const codesListElement = document.getElementById("codes-list");
+    const startBtn = document.getElementById("start-btn");
+    const stopBtn = document.getElementById("stop-btn");
+    const clearBtn = document.getElementById("clear-btn");
+    const resetBtn = document.getElementById("reset-btn");
+    const downloadTxtBtn = document.getElementById("download-txt-btn");
+    const downloadCsvBtn = document.getElementById("download-csv-btn");
+    const statusElement = document.getElementById("status");
+    const torchBtn = document.getElementById("torch-btn");
 
-        // Obiekt skanera
-        const html5QrCode = new Html5Qrcode("reader");
-        let scanning = false;
+    const html5QrCode = new Html5Qrcode("reader");
+    let scanning = false;
+    let torchOn = false;
 
-        // --- POMOCNICZE ---
+    function updateStatus(text) {
+      statusElement.textContent = "Status: " + text;
+    }
 
-        function updateStatus(text) {
-            statusElement.textContent = "Status: " + text;
+    function setButtonsState(isScanning) {
+      scanning = isScanning;
+      startBtn.disabled = isScanning;
+      stopBtn.disabled = !isScanning;
+      torchBtn.disabled = !isScanning;
+    }
+
+    function renderCodesList() {
+      codesListElement.innerHTML = "";
+      Array.from(scannedCodes).forEach(code => {
+        const li = document.createElement("li");
+        li.textContent = code;
+        codesListElement.appendChild(li);
+      });
+    }
+
+    function saveToLocalStorage() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(scannedCodes)));
+      } catch (e) {
+        console.error("Błąd zapisu do localStorage:", e);
+      }
+    }
+
+    function loadFromLocalStorage() {
+      try {
+        const json = localStorage.getItem(STORAGE_KEY);
+        if (!json) return;
+        const arr = JSON.parse(json);
+        if (Array.isArray(arr)) arr.forEach(code => scannedCodes.add(code));
+      } catch (e) {
+        console.error("Błąd odczytu z localStorage:", e);
+      }
+    }
+
+    function downloadFile(content, fileName, mimeType) {
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function downloadTxt() {
+      if (scannedCodes.size === 0) return alert("Brak zeskanowanych kodów.");
+      downloadFile(Array.from(scannedCodes).join("\n"), "kody_qr.txt", "text/plain;charset=utf-8");
+    }
+
+    function downloadCsv() {
+      if (scannedCodes.size === 0) return alert("Brak zeskanowanych kodów.");
+      const rows = ["Nr;Kod"];
+      Array.from(scannedCodes).forEach((code, i) => {
+        const safe = '"' + String(code).replace(/"/g, '""') + '"';
+        rows.push(`${i + 1};${safe}`);
+      });
+      downloadFile(rows.join("\n"), "kody_qr.csv", "text/csv;charset=utf-8");
+    }
+
+    function clearCodes() {
+      if (scannedCodes.size === 0) return;
+      if (!confirm("Usunąć wszystkie kody z listy i zapisu w telefonie?")) return;
+      scannedCodes.clear();
+      saveToLocalStorage();     // <- ważne: naprawdę czyści zapis
+      renderCodesList();
+      updateStatus("lista wyczyszczona");
+    }
+
+    // --- JAKOŚĆ WIDEO / OSTROŚĆ ---
+    // Tu najważniejsze: wymuszenie lepszej rozdzielczości + próba ciągłego autofocusu.
+    async function applyQualityHints() {
+      // Nie wszystkie przeglądarki wspierają te constraints – dlatego try/catch.
+      try {
+        await html5QrCode.applyVideoConstraints({
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          advanced: [
+            { focusMode: "continuous" }
+          ]
+        });
+      } catch (e) {
+        // ignorujemy – na części urządzeń i tak będzie lepiej z samym width/height w start()
+        console.warn("Nie udało się zastosować constraints (to normalne na części urządzeń):", e);
+      }
+    }
+
+    async function setTorch(on) {
+      try {
+        await html5QrCode.applyVideoConstraints({
+          advanced: [{ torch: !!on }]
+        });
+        torchOn = !!on;
+        torchBtn.textContent = `Latarka: ${torchOn ? "ON" : "OFF"}`;
+      } catch (e) {
+        // jeśli brak wsparcia – wyłącz przycisk i pokaż info
+        console.warn("Torch nieobsługiwany:", e);
+        torchBtn.disabled = true;
+        alert("Latarka nie jest wspierana na tym urządzeniu/przeglądarce.");
+      }
+    }
+
+    // --- SKANOWANIE ---
+    async function startScanning() {
+      if (scanning) return;
+
+      try {
+        const devices = await Html5Qrcode.getCameras();
+        if (!devices || devices.length === 0) {
+          alert("Nie znaleziono żadnej kamery.");
+          return;
         }
 
-        function setButtonsState(isScanning) {
-            scanning = isScanning;
-            startBtn.disabled = isScanning;
-            stopBtn.disabled = !isScanning;
-        }
+        // Wymuszenie lepszej jakości: idealne wymiary + tylna kamera.
+        const cameraConfig = {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        };
 
-        function renderCodesList() {
-            codesListElement.innerHTML = "";
-            Array.from(scannedCodes).forEach(code => {
-                const li = document.createElement("li");
-                li.textContent = code;
-                codesListElement.appendChild(li);
-            });
-        }
+        const config = {
+          fps: 15,
+          qrbox: { width: 300, height: 300 },
+          disableFlip: true
+        };
 
-        function saveToLocalStorage() {
-            const arr = Array.from(scannedCodes);
-            try {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
-            } catch (e) {
-                console.error("Błąd zapisu do localStorage:", e);
+        await html5QrCode.start(
+          cameraConfig,
+          config,
+          (qrCodeMessage) => {
+            if (!scannedCodes.has(qrCodeMessage)) {
+              scannedCodes.add(qrCodeMessage);
+              saveToLocalStorage();
+              renderCodesList();
             }
+          },
+          (_errorMessage) => { /* ignorujemy błędy klatek */ }
+        );
+
+        setButtonsState(true);
+        updateStatus("skanowanie trwa...");
+
+        // dodatkowa próba “dopalenia” autofocusu
+        await applyQualityHints();
+
+      } catch (err) {
+        console.error(err);
+        alert("Błąd przy uruchamianiu kamery lub skanera.");
+        setButtonsState(false);
+        updateStatus("błąd skanowania");
+      }
+    }
+
+    async function stopScanning() {
+      if (!scanning) return;
+      try {
+        // przy stop warto zgasić torch, jeśli był
+        if (torchOn) {
+          try { await setTorch(false); } catch (_) {}
         }
+        await html5QrCode.stop();
+      } catch (err) {
+        console.error(err);
+      } finally {
+        torchOn = false;
+        torchBtn.textContent = "Latarka: OFF";
+        setButtonsState(false);
+        updateStatus("zatrzymano");
+      }
+    }
 
-        function loadFromLocalStorage() {
-            try {
-                const json = localStorage.getItem(STORAGE_KEY);
-                if (!json) return;
-                const arr = JSON.parse(json);
-                if (Array.isArray(arr)) {
-                    arr.forEach(code => scannedCodes.add(code));
-                }
-            } catch (e) {
-                console.error("Błąd odczytu z localStorage:", e);
-            }
-        }
+    async function resetScanner() {
+      if (!confirm("Zresetować skaner i usunąć wszystkie zapisane kody z tego telefonu?")) return;
 
-        // --- SKANOWANIE ---
+      if (scanning) {
+        try { await stopScanning(); } catch (_) {}
+      }
 
-        async function startScanning() {
-            if (scanning) return;
+      scannedCodes.clear();
+      try { localStorage.removeItem(STORAGE_KEY); } catch (e) { console.error(e); }
 
-            try {
-                const devices = await Html5Qrcode.getCameras();
-                if (!devices || devices.length === 0) {
-                    alert("Nie znaleziono żadnej kamery.");
-                    return;
-                }
+      renderCodesList();
+      setButtonsState(false);
+      updateStatus("zresetowano (brak zapisanych kodów)");
+      alert("Skaner został zresetowany, wszystkie zapisane kody usunięte.");
+    }
 
-                await html5QrCode.start(
-                    { facingMode: "environment" }, // tylna kamera
-                    {
-                        fps: 10,
-                        qrbox: 250
-                    },
-                    qrCodeMessage => {
-                        if (!scannedCodes.has(qrCodeMessage)) {
-                            scannedCodes.add(qrCodeMessage);
-                            saveToLocalStorage();   // zapisujemy do "pliku" w telefonie
-                            renderCodesList();
-                        }
-                    },
-                    errorMessage => {
-                        // ignorujemy błędy pojedynczych klatek
-                    }
-                );
+    // --- PODPIĘCIE PRZYCISKÓW ---
+    startBtn.addEventListener("click", startScanning);
+    stopBtn.addEventListener("click", stopScanning);
+    clearBtn.addEventListener("click", clearCodes);
+    resetBtn.addEventListener("click", resetScanner);
+    downloadTxtBtn.addEventListener("click", downloadTxt);
+    downloadCsvBtn.addEventListener("click", downloadCsv);
 
-                setButtonsState(true);
-                updateStatus("skanowanie trwa...");
-            } catch (err) {
-                console.error(err);
-                alert("Błąd przy uruchamianiu kamery lub skanera.");
-                setButtonsState(false);
-                updateStatus("błąd skanowania");
-            }
-        }
+    torchBtn.addEventListener("click", async () => {
+      if (!scanning) return;
+      await setTorch(!torchOn);
+    });
 
-        async function stopScanning() {
-            if (!scanning) return;
-            try {
-                await html5QrCode.stop();
-            } catch (err) {
-                console.error(err);
-            } finally {
-                setButtonsState(false);
-                updateStatus("zatrzymano");
-            }
-        }
+    window.addEventListener("beforeunload", () => { stopScanning(); });
 
-        function downloadFile(content, fileName, mimeType) {
-            const blob = new Blob([content], { type: mimeType });
-            const url = URL.createObjectURL(blob);
+    // --- START: wczytaj zapisane kody ---
+    loadFromLocalStorage();
+    renderCodesList();
+    updateStatus("nie skanuje (kody wczytane z pamięci)");
 
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = fileName;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-
-            URL.revokeObjectURL(url);
-        }
-
-        function downloadTxt() {
-            if (scannedCodes.size === 0) {
-                alert("Brak zeskanowanych kodów.");
-                return;
-            }
-            const text = Array.from(scannedCodes).join("\n");
-            downloadFile(text, "kody_qr.txt", "text/plain;charset=utf-8");
-        }
-
-        function downloadCsv() {
-            if (scannedCodes.size === 0) {
-                alert("Brak zeskanowanych kodów.");
-                return;
-            }
-
-            const rows = [];
-            rows.push("Nr;Kod");
-
-            Array.from(scannedCodes).forEach((code, index) => {
-                const safeCode = '"' + code.replace(/"/g, '""') + '"';
-                rows.push((index + 1) + ";" + safeCode);
-            });
-
-            const csvContent = rows.join("\n");
-            downloadFile(csvContent, "kody_qr.csv", "text/csv;charset=utf-8");
-        }
-
-        function clearCodes() {
-            if (scannedCodes.size === 0) return;
-            if (!confirm("Na pewno usunąć wszystkie kody z listy (zostaną nadal w pamięci, dopóki nie zresetujesz skanera)?")) {
-                return;
-            }
-            scannedCodes.clear();
-            renderCodesList();
-            updateStatus("lista wyczyszczona (pamięć lokalna NIE zresetowana)");
-        }
-
-        async function resetScanner() {
-            if (!confirm("Czy na pewno chcesz zresetować skaner i usunąć wszystkie zapisane kody z tego telefonu?")) {
-                return;
-            }
-
-            // 1. Zatrzymaj skaner, jeśli działa
-            if (scanning) {
-                try {
-                    await html5QrCode.stop();
-                } catch (err) {
-                    console.warn("Skaner już był zatrzymany lub błąd przy stop():", err);
-                }
-            }
-
-            // 2. Wyczyść pamięć danych
-            scannedCodes.clear();
-            try {
-                localStorage.removeItem(STORAGE_KEY);
-            } catch (e) {
-                console.error("Błąd przy czyszczeniu localStorage:", e);
-            }
-
-            // 3. Odśwież UI
-            renderCodesList();
-            setButtonsState(false);
-            updateStatus("zresetowano (brak zapisanych kodów)");
-
-            alert("Skaner został zresetowany, wszystkie zapisane kody usunięte.");
-        }
-
-        // --- PODPIĘCIE PRZYCISKÓW ---
-
-        startBtn.addEventListener("click", startScanning);
-        stopBtn.addEventListener("click", stopScanning);
-        clearBtn.addEventListener("click", clearCodes);
-        resetBtn.addEventListener("click", resetScanner);
-        downloadTxtBtn.addEventListener("click", downloadTxt);
-        downloadCsvBtn.addEventListener("click", downloadCsv);
-
-        window.addEventListener("beforeunload", stopScanning);
-
-        // --- START: ładowanie zapisanych kodów z pamięci ---
-
-        loadFromLocalStorage();
-        renderCodesList();
-        updateStatus("nie skanuje (kody wczytane z pamięci)");
-    </script>
-    <script>
+    // --- Service Worker (offline dla Twoich plików) ---
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("./service-worker.js")
-        .then(reg => console.log("Service Worker zarejestrowany:", reg.scope))
-        .catch(err => console.error("Błąd rejestracji Service Workera:", err));
+        .then(reg => console.log("Service Worker OK:", reg.scope))
+        .catch(err => console.error("SW error:", err));
     }
-    </script>
-
+  </script>
 </body>
 </html>
