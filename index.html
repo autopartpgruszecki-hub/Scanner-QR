@@ -5,31 +5,32 @@
   <title>Skanner QR</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <link rel="manifest" href="./manifest.json" />
-  <meta name="theme-color" content="#ffffff" />
-
   <!-- LOKALNIE, nie z CDN -->
   <script src="./html5-qrcode.min.js"></script>
 
   <style>
     body { font-family: Arial, sans-serif; margin: 10px; }
     #reader { width: 100%; max-width: 420px; margin: 10px auto; }
-    button { margin: 5px 3px; padding: 8px 12px; cursor: pointer; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button, select, input[type="range"] { margin: 5px 3px; padding: 8px 12px; cursor: pointer; }
+    button:disabled, select:disabled, input:disabled { opacity: 0.5; cursor: not-allowed; }
     #codes-list { margin-top: 15px; padding-left: 20px; }
     #codes-list li { word-break: break-all; margin-bottom: 3px; font-size: 14px; }
     #status { margin-top: 8px; font-size: 14px; }
     #reset-btn { background-color: #ff4d4d; color: #fff; }
     #torch-btn { background-color: #222; color: #fff; }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
     .hint { font-size: 12px; opacity: 0.8; margin-top: 6px; }
-    code { background: #f3f3f3; padding: 1px 4px; border-radius: 4px; }
+    .ctrl { margin-top: 8px; }
+    label { font-size: 12px; opacity: 0.85; margin-right: 6px; }
+    #zoom-wrap { display: none; align-items: center; gap: 8px; }
+    #zoom-val { font-size: 12px; opacity: 0.85; min-width: 46px; text-align: right; }
   </style>
 </head>
 
 <body>
   <h2>Skanner QR</h2>
 
-  <div>
+  <div class="row">
     <button id="start-btn">Start</button>
     <button id="stop-btn" disabled>Stop</button>
     <button id="torch-btn" disabled>Latarka: OFF</button>
@@ -38,9 +39,17 @@
   </div>
 
   <div id="status">Status: nie skanuje</div>
-  <div class="hint">
-    Wskazówka: kamera działa tylko w <b>HTTPS</b> lub <b>http://localhost</b>.
-    Sprawdź: <code>isSecureContext</code>.
+  <div class="hint">Wskazówka: kamera działa tylko w <b>HTTPS</b> lub <b>http://localhost</b>.</div>
+
+  <div class="ctrl row">
+    <label for="camera-select">Kamera:</label>
+    <select id="camera-select" disabled></select>
+
+    <div id="zoom-wrap" class="row">
+      <label for="zoom-range">Zoom:</label>
+      <input id="zoom-range" type="range" min="1" max="1" step="0.1" value="1" />
+      <div id="zoom-val">1.0×</div>
+    </div>
   </div>
 
   <div id="reader"></div>
@@ -48,13 +57,15 @@
   <h3>Zeskanowane kody:</h3>
   <ul id="codes-list"></ul>
 
-  <div>
+  <div class="row">
     <button id="download-txt-btn">Pobierz TXT</button>
     <button id="download-csv-btn">Pobierz CSV</button>
   </div>
 
   <script>
-    const STORAGE_KEY = "qr_scanned_codes_v6";
+    const STORAGE_KEY = "qr_scanned_codes_v7";
+    const CAM_KEY = "qr_camera_deviceId_v1";
+
     const scannedCodes = new Set();
 
     const elList = document.getElementById("codes-list");
@@ -67,19 +78,24 @@
     const statusEl = document.getElementById("status");
     const torchBtn = document.getElementById("torch-btn");
 
+    const camSelect = document.getElementById("camera-select");
+    const zoomWrap = document.getElementById("zoom-wrap");
+    const zoomRange = document.getElementById("zoom-range");
+    const zoomVal = document.getElementById("zoom-val");
+
     let scanning = false;
     let torchOn = false;
-
-    // Jedna instancja skanera na cały czas życia strony:
     let qr = null;
+    let hasTorch = false;
+    let zoomCaps = null; // {min,max,step}
 
     function setStatus(t) { statusEl.textContent = "Status: " + t; }
     function setButtons(isScanning) {
       scanning = isScanning;
       startBtn.disabled = isScanning;
       stopBtn.disabled = !isScanning;
-      // torch będzie dodatkowo sterowany wykryciem wsparcia
-      torchBtn.disabled = !isScanning;
+      torchBtn.disabled = !isScanning || !hasTorch;
+      camSelect.disabled = !isScanning; // możesz zmienić kamerę w trakcie (zrestartuje skan)
     }
 
     function renderList() {
@@ -125,7 +141,6 @@
         const safe = '"' + String(code).replace(/"/g, '""') + '"';
         rows.push(`${i+1};${safe}`);
       });
-      // BOM pomaga Excelowi poprawnie czytać UTF-8
       const bom = "\uFEFF";
       downloadFile(bom + rows.join("\n"), "kody_qr.csv", "text/csv;charset=utf-8");
     }
@@ -139,49 +154,6 @@
       setStatus("wyczyszczono");
     }
 
-    async function applyQualityHints(qrInstance) {
-      // Nie wszystkie przeglądarki/urządzenia to wspierają — ignorujemy błędy.
-      try {
-        await qrInstance.applyVideoConstraints({
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          advanced: [{ focusMode: "continuous" }]
-        });
-      } catch {}
-    }
-
-    async function initTorchAvailability(qrInstance) {
-      // Spróbuj wykryć torch na tracku; jeśli brak — wyłącz przycisk na stałe.
-      try {
-        const track = qrInstance.getRunningTrack?.();
-        const caps = track?.getCapabilities?.();
-        if (!caps || !("torch" in caps)) {
-          torchBtn.disabled = true;
-          torchBtn.textContent = "Latarka: brak";
-          return false;
-        }
-        torchBtn.disabled = false;
-        torchBtn.textContent = `Latarka: ${torchOn ? "ON" : "OFF"}`;
-        return true;
-      } catch {
-        torchBtn.disabled = true;
-        torchBtn.textContent = "Latarka: brak";
-        return false;
-      }
-    }
-
-    async function setTorch(qrInstance, on) {
-      try {
-        await qrInstance.applyVideoConstraints({ advanced: [{ torch: !!on }] });
-        torchOn = !!on;
-        torchBtn.textContent = `Latarka: ${torchOn ? "ON" : "OFF"}`;
-      } catch {
-        torchBtn.disabled = true;
-        torchBtn.textContent = "Latarka: brak";
-        alert("Latarka nieobsługiwana na tym urządzeniu/przeglądarce.");
-      }
-    }
-
     function onScanSuccess(msg) {
       if (!scannedCodes.has(msg)) {
         scannedCodes.add(msg);
@@ -190,11 +162,118 @@
       }
     }
 
+    async function applyAutofocusAndQuality(qrInstance) {
+      try {
+        await qrInstance.applyVideoConstraints({
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          advanced: [{ focusMode: "continuous" }]
+        });
+      } catch {}
+    }
+
+    async function detectTorchAndZoom(qrInstance) {
+      hasTorch = false;
+      zoomCaps = null;
+      zoomWrap.style.display = "none";
+      torchBtn.textContent = "Latarka: OFF";
+      torchOn = false;
+
+      try {
+        const track = qrInstance.getRunningTrack?.();
+        const caps = track?.getCapabilities?.() || {};
+
+        // torch
+        if ("torch" in caps) hasTorch = true;
+
+        // zoom
+        if (caps.zoom) {
+          const min = caps.zoom.min ?? 1;
+          const max = caps.zoom.max ?? 1;
+          const step = caps.zoom.step ?? 0.1;
+          zoomCaps = { min, max, step };
+          zoomRange.min = String(min);
+          zoomRange.max = String(max);
+          zoomRange.step = String(step);
+          zoomRange.value = String(min);
+          zoomVal.textContent = `${Number(min).toFixed(1)}×`;
+          zoomWrap.style.display = "flex";
+
+          // lekki zoom na start (często pomaga z QR)
+          const target = Math.min(max, min + (max - min) * 0.25);
+          try {
+            await qrInstance.applyVideoConstraints({ advanced: [{ zoom: target }] });
+            zoomRange.value = String(target);
+            zoomVal.textContent = `${Number(target).toFixed(1)}×`;
+          } catch {}
+        }
+      } catch {}
+
+      torchBtn.disabled = !scanning || !hasTorch;
+    }
+
+    async function setTorch(qrInstance, on) {
+      try {
+        await qrInstance.applyVideoConstraints({ advanced: [{ torch: !!on }] });
+        torchOn = !!on;
+        torchBtn.textContent = `Latarka: ${torchOn ? "ON" : "OFF"}`;
+      } catch {
+        hasTorch = false;
+        torchOn = false;
+        torchBtn.disabled = true;
+        torchBtn.textContent = "Latarka: brak";
+      }
+    }
+
+    async function setZoom(qrInstance, value) {
+      try {
+        await qrInstance.applyVideoConstraints({ advanced: [{ zoom: Number(value) }] });
+      } catch {}
+    }
+
+    async function populateCameras() {
+      // Żeby dostać nazwy kamer, zwykle trzeba mieć już pozwolenie na kamerę.
+      try {
+        const devices = await Html5Qrcode.getCameras();
+        camSelect.innerHTML = "";
+        devices.forEach((d, idx) => {
+          const opt = document.createElement("option");
+          opt.value = d.id;
+          opt.textContent = d.label || `Kamera ${idx + 1}`;
+          camSelect.appendChild(opt);
+        });
+
+        const saved = localStorage.getItem(CAM_KEY);
+        if (saved && devices.some(d => d.id === saved)) {
+          camSelect.value = saved;
+        } else if (devices.length) {
+          camSelect.value = devices[0].id;
+        }
+      } catch (e) {
+        console.warn("Nie udało się pobrać listy kamer:", e);
+      }
+    }
+
+    async function startWithSelectedCamera() {
+      if (!qr) qr = new Html5Qrcode("reader");
+
+      const config = { fps: 15, qrbox: { width: 320, height: 320 }, disableFlip: true };
+
+      const deviceId = camSelect.value || null;
+
+      // WAŻNE: wybór konkretnej kamery przez deviceId (omija “ultra-wide” jeśli wybierzesz inną)
+      const cameraConfig = deviceId
+        ? { deviceId: { exact: deviceId } }
+        : { facingMode: "environment" };
+
+      await qr.start(cameraConfig, config, onScanSuccess, () => {});
+    }
+
     async function startScanning() {
       if (scanning) return;
 
       if (!window.isSecureContext) {
-        alert("Brak secure context. Uruchom stronę przez HTTPS lub http://localhost (kamera inaczej nie ruszy).");
+        alert("Brak secure context. Uruchom stronę przez HTTPS lub http://localhost.");
         setStatus("brak HTTPS/localhost");
         return;
       }
@@ -204,54 +283,53 @@
         return;
       }
 
-      if (!qr) qr = new Html5Qrcode("reader");
-
-      // Konfiguracja skanowania
-      const config = {
-        fps: 15,
-        qrbox: { width: 320, height: 320 },
-        disableFlip: true
-      };
-
       try {
-        // Minimalne constraints = największa kompatybilność
-        await qr.start(
-          { facingMode: "environment" },
-          config,
-          onScanSuccess,
-          () => {}
-        );
+        // Najpierw start (żeby dostać permission), potem pobierz listę kamer z labelami:
+        if (!qr) qr = new Html5Qrcode("reader");
+        const config = { fps: 15, qrbox: { width: 320, height: 320 }, disableFlip: true };
 
+        // Start awaryjny: environment (tylna)
+        await qr.start({ facingMode: "environment" }, config, onScanSuccess, () => {});
         setButtons(true);
         setStatus("skanuje");
 
-        // Dopiero po starcie próbujemy poprawić jakość i torch
-        await applyQualityHints(qr);
-        await initTorchAvailability(qr);
+        await applyAutofocusAndQuality(qr);
+        await detectTorchAndZoom(qr);
 
-        torchBtn.onclick = () => setTorch(qr, !torchOn);
+        // Teraz mamy permission -> pobierz kamery z nazwami i pozwól wybrać
+        await populateCameras();
+        camSelect.disabled = false;
+
+        // Jeśli mamy zapisaną kamerę i NIE jest to ta aktualna, przełącz od razu:
+        const saved = localStorage.getItem(CAM_KEY);
+        if (saved && camSelect.value === saved) {
+          // OK
+        } else if (saved && camSelect.querySelector(`option[value="${saved}"]`)) {
+          camSelect.value = saved;
+        }
+
+        // Restart na wybranej kamerze (żeby ominąć ultra-wide jeśli trzeba)
+        if (camSelect.value) {
+          await stopScanning(false);
+          await startWithSelectedCamera();
+          setButtons(true);
+          setStatus("skanuje");
+          await applyAutofocusAndQuality(qr);
+          await detectTorchAndZoom(qr);
+        }
 
       } catch (e) {
         console.error(e);
         const name = e?.name || "UnknownError";
         const msg  = e?.message || String(e);
-
         setButtons(false);
         setStatus(`błąd: ${name}`);
-        alert(
-          "Nie udało się uruchomić kamery.\n\n" +
-          `${name}\n${msg}\n\n` +
-          "Najczęstsze powody:\n" +
-          "- brak HTTPS (lub nie localhost)\n" +
-          "- brak zgody na kamerę\n" +
-          "- wbudowana przeglądarka (FB/IG/Messenger)\n" +
-          "- kamera zajęta przez inną aplikację"
-        );
+        alert(`Nie udało się uruchomić kamery.\n\n${name}\n${msg}`);
       }
     }
 
-    async function stopScanning() {
-      if (!scanning) return;
+    async function stopScanning(updateUi = true) {
+      if (!scanning && updateUi) return;
       try {
         if (qr) {
           if (torchOn) { try { await setTorch(qr, false); } catch {} }
@@ -261,42 +339,71 @@
         console.warn(e);
       } finally {
         torchOn = false;
-        torchBtn.textContent = "Latarka: OFF";
-        setButtons(false);
-        setStatus("zatrzymano");
+        hasTorch = false;
+        zoomCaps = null;
+        zoomWrap.style.display = "none";
+        if (updateUi) {
+          torchBtn.textContent = "Latarka: OFF";
+          setButtons(false);
+          setStatus("zatrzymano");
+        }
       }
     }
 
     async function resetScanner() {
       if (!confirm("Zresetować i usunąć wszystkie kody?")) return;
-      if (scanning) await stopScanning();
+      if (scanning) await stopScanning(true);
       scannedCodes.clear();
       localStorage.removeItem(STORAGE_KEY);
       renderList();
       setStatus("zresetowano");
     }
 
+    // Zmiana kamery w trakcie: zapisz i zrestartuj skan
+    camSelect.addEventListener("change", async () => {
+      const id = camSelect.value;
+      if (id) localStorage.setItem(CAM_KEY, id);
+      if (!scanning) return;
+      try {
+        setStatus("przełączam kamerę...");
+        await stopScanning(false);
+        await startWithSelectedCamera();
+        setButtons(true);
+        setStatus("skanuje");
+        await applyAutofocusAndQuality(qr);
+        await detectTorchAndZoom(qr);
+      } catch (e) {
+        console.error(e);
+        alert("Nie udało się przełączyć kamery: " + (e?.message || e));
+        setStatus("błąd przełączania");
+      }
+    });
+
+    zoomRange.addEventListener("input", async () => {
+      zoomVal.textContent = `${Number(zoomRange.value).toFixed(1)}×`;
+      if (scanning && qr && zoomCaps) await setZoom(qr, zoomRange.value);
+    });
+
     startBtn.addEventListener("click", startScanning);
-    stopBtn.addEventListener("click", stopScanning);
+    stopBtn.addEventListener("click", () => stopScanning(true));
     clearBtn.addEventListener("click", clearAll);
     resetBtn.addEventListener("click", resetScanner);
     txtBtn.addEventListener("click", downloadTxt);
     csvBtn.addEventListener("click", downloadCsv);
 
-    // Lepsze niż beforeunload dla mobilnych (async w beforeunload bywa ubijany)
-    window.addEventListener("pagehide", () => { try { stopScanning(); } catch {} });
+    torchBtn.addEventListener("click", async () => {
+      if (!scanning || !qr || !hasTorch) return;
+      await setTorch(qr, !torchOn);
+    });
+
+    window.addEventListener("pagehide", () => { try { stopScanning(false); } catch {} });
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) { try { stopScanning(); } catch {} }
+      if (document.hidden) { try { stopScanning(false); } catch {} }
     });
 
     load();
     renderList();
     setStatus("nie skanuje (wczytano z pamięci)");
-
-    // SW (opcjonalnie, dla offline)
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./service-worker.js").catch(console.error);
-    }
   </script>
 </body>
 </html>
