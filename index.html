@@ -8,7 +8,6 @@
   <link rel="manifest" href="./manifest.json" />
   <meta name="theme-color" content="#ffffff" />
 
-  <!-- Najlepiej wersjonowany plik (mniej problemów niż "https://unpkg.com/html5-qrcode") -->
   <script src="https://unpkg.com/html5-qrcode@2.3.10/minified/html5-qrcode.min.js"></script>
 
   <style>
@@ -21,7 +20,9 @@
     #status { margin-top: 8px; font-size: 14px; }
     #reset-btn { background-color: #ff4d4d; color: #fff; }
     #torch-btn { background-color: #222; color: #fff; }
+    #info-btn { background-color: #0b5; color: #fff; }
     .small { font-size: 12px; opacity: .8; margin-top: 6px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
   </style>
 </head>
 
@@ -32,18 +33,21 @@
     <button id="start-btn">Start skanowania</button>
     <button id="stop-btn" disabled>Stop skanowania</button>
     <button id="torch-btn" disabled>Latarka: OFF</button>
+    <button id="info-btn" disabled>Pokaż parametry video</button>
     <button id="clear-btn">Wyczyść listę</button>
     <button id="reset-btn">Reset skanera</button>
   </div>
 
   <div id="status">Status: nie skanuje</div>
   <div class="small">
-    Tip: dla ostrości trzymaj kod ~15–30 cm od kamery, nie zasłaniaj światła, nie rozciągaj podglądu na cały ekran.
+    Tip: jeśli obraz jest “mydło”, nie rozciągaj podglądu na cały ekran. W tym kodzie max-width jest ograniczony,
+    a kamera dostaje prośbę o wyższą rozdzielczość (1280×720).
   </div>
 
   <div id="reader"></div>
+  <div id="video-info" class="mono"></div>
 
-  <h3>Zeskanowane kody (zapisane w telefonie):</h3>
+  <h3>Zeskanowane kody:</h3>
   <ul id="codes-list"></ul>
 
   <div>
@@ -52,12 +56,9 @@
   </div>
 
   <script>
-    // --- KONFIG ---
-    const STORAGE_KEY = "qr_scanned_codes_v2";
+    const STORAGE_KEY = "qr_scanned_codes_v3";
 
-    // Set żeby nie duplikować
     const scannedCodes = new Set();
-
     const codesListElement = document.getElementById("codes-list");
     const startBtn = document.getElementById("start-btn");
     const stopBtn = document.getElementById("stop-btn");
@@ -67,20 +68,21 @@
     const downloadCsvBtn = document.getElementById("download-csv-btn");
     const statusElement = document.getElementById("status");
     const torchBtn = document.getElementById("torch-btn");
+    const infoBtn = document.getElementById("info-btn");
+    const videoInfoEl = document.getElementById("video-info");
 
     const html5QrCode = new Html5Qrcode("reader");
     let scanning = false;
     let torchOn = false;
 
-    function updateStatus(text) {
-      statusElement.textContent = "Status: " + text;
-    }
+    function updateStatus(text) { statusElement.textContent = "Status: " + text; }
 
     function setButtonsState(isScanning) {
       scanning = isScanning;
       startBtn.disabled = isScanning;
       stopBtn.disabled = !isScanning;
       torchBtn.disabled = !isScanning;
+      infoBtn.disabled = !isScanning;
     }
 
     function renderCodesList() {
@@ -93,22 +95,14 @@
     }
 
     function saveToLocalStorage() {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(scannedCodes)));
-      } catch (e) {
-        console.error("Błąd zapisu do localStorage:", e);
-      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(scannedCodes)));
     }
 
     function loadFromLocalStorage() {
-      try {
-        const json = localStorage.getItem(STORAGE_KEY);
-        if (!json) return;
-        const arr = JSON.parse(json);
-        if (Array.isArray(arr)) arr.forEach(code => scannedCodes.add(code));
-      } catch (e) {
-        console.error("Błąd odczytu z localStorage:", e);
-      }
+      const json = localStorage.getItem(STORAGE_KEY);
+      if (!json) return;
+      const arr = JSON.parse(json);
+      if (Array.isArray(arr)) arr.forEach(code => scannedCodes.add(code));
     }
 
     function downloadFile(content, fileName, mimeType) {
@@ -124,12 +118,12 @@
     }
 
     function downloadTxt() {
-      if (scannedCodes.size === 0) return alert("Brak zeskanowanych kodów.");
+      if (scannedCodes.size === 0) return alert("Brak kodów.");
       downloadFile(Array.from(scannedCodes).join("\n"), "kody_qr.txt", "text/plain;charset=utf-8");
     }
 
     function downloadCsv() {
-      if (scannedCodes.size === 0) return alert("Brak zeskanowanych kodów.");
+      if (scannedCodes.size === 0) return alert("Brak kodów.");
       const rows = ["Nr;Kod"];
       Array.from(scannedCodes).forEach((code, i) => {
         const safe = '"' + String(code).replace(/"/g, '""') + '"';
@@ -142,130 +136,141 @@
       if (scannedCodes.size === 0) return;
       if (!confirm("Usunąć wszystkie kody z listy i zapisu w telefonie?")) return;
       scannedCodes.clear();
-      saveToLocalStorage();     // <- ważne: naprawdę czyści zapis
+      saveToLocalStorage();
       renderCodesList();
       updateStatus("lista wyczyszczona");
     }
 
-    // --- JAKOŚĆ WIDEO / OSTROŚĆ ---
-    // Tu najważniejsze: wymuszenie lepszej rozdzielczości + próba ciągłego autofocusu.
+    async function getBackCameraId() {
+      const devices = await Html5Qrcode.getCameras();
+      if (!devices || devices.length === 0) return null;
+
+      // heurystyka: szukamy "back", "rear", "environment" w label (na HTTPS label zwykle jest dostępny po zgodzie)
+      const preferred = devices.find(d => /back|rear|environment/i.test(d.label || ""));
+      return (preferred || devices[devices.length - 1]).id; // często ostatnia to tylna
+    }
+
     async function applyQualityHints() {
-      // Nie wszystkie przeglądarki wspierają te constraints – dlatego try/catch.
       try {
         await html5QrCode.applyVideoConstraints({
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
           advanced: [
             { focusMode: "continuous" }
           ]
         });
       } catch (e) {
-        // ignorujemy – na części urządzeń i tak będzie lepiej z samym width/height w start()
-        console.warn("Nie udało się zastosować constraints (to normalne na części urządzeń):", e);
+        // normalne – nie każde urządzenie/przeglądarka pozwala na wszystko
+        console.warn("applyVideoConstraints nie w pełni wspierane:", e);
       }
     }
 
     async function setTorch(on) {
       try {
-        await html5QrCode.applyVideoConstraints({
-          advanced: [{ torch: !!on }]
-        });
+        await html5QrCode.applyVideoConstraints({ advanced: [{ torch: !!on }] });
         torchOn = !!on;
         torchBtn.textContent = `Latarka: ${torchOn ? "ON" : "OFF"}`;
       } catch (e) {
-        // jeśli brak wsparcia – wyłącz przycisk i pokaż info
         console.warn("Torch nieobsługiwany:", e);
         torchBtn.disabled = true;
-        alert("Latarka nie jest wspierana na tym urządzeniu/przeglądarce.");
+        alert("Latarka nie jest wspierana na tym telefonie/przeglądarce.");
       }
     }
 
-    // --- SKANOWANIE ---
+    function showVideoInfo() {
+      const video = document.querySelector("#reader video");
+      if (!video) return;
+
+      const track = video.srcObject?.getVideoTracks?.()[0];
+      const settings = track?.getSettings?.() || {};
+      const caps = track?.getCapabilities?.() || {};
+
+      videoInfoEl.textContent =
+        "VIDEO SETTINGS:\n" + JSON.stringify(settings, null, 2) +
+        "\n\nVIDEO CAPABILITIES (fragment):\n" +
+        JSON.stringify({
+          width: caps.width,
+          height: caps.height,
+          focusMode: caps.focusMode,
+          torch: caps.torch
+        }, null, 2);
+    }
+
     async function startScanning() {
       if (scanning) return;
 
       try {
-        const devices = await Html5Qrcode.getCameras();
-        if (!devices || devices.length === 0) {
-          alert("Nie znaleziono żadnej kamery.");
-          return;
-        }
+        const backId = await getBackCameraId();
+        if (!backId) return alert("Nie znaleziono kamery.");
 
-        // Wymuszenie lepszej jakości: idealne wymiary + tylna kamera.
+        // Klucz do jakości na Chrome:
+        // deviceId + prośba o wysoką rozdzielczość.
         const cameraConfig = {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          deviceId: { exact: backId },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
         };
 
         const config = {
           fps: 15,
-          qrbox: { width: 300, height: 300 },
+          qrbox: { width: 320, height: 320 },
           disableFlip: true
         };
 
         await html5QrCode.start(
           cameraConfig,
           config,
-          (qrCodeMessage) => {
-            if (!scannedCodes.has(qrCodeMessage)) {
-              scannedCodes.add(qrCodeMessage);
+          (msg) => {
+            if (!scannedCodes.has(msg)) {
+              scannedCodes.add(msg);
               saveToLocalStorage();
               renderCodesList();
             }
           },
-          (_errorMessage) => { /* ignorujemy błędy klatek */ }
+          () => {}
         );
 
         setButtonsState(true);
         updateStatus("skanowanie trwa...");
-
-        // dodatkowa próba “dopalenia” autofocusu
         await applyQualityHints();
+
+        // pokaż info automatycznie po 1s (żeby video zdążyło wystartować)
+        setTimeout(showVideoInfo, 1000);
 
       } catch (err) {
         console.error(err);
-        alert("Błąd przy uruchamianiu kamery lub skanera.");
         setButtonsState(false);
         updateStatus("błąd skanowania");
+        alert("Nie udało się uruchomić kamery. Upewnij się, że strona jest na HTTPS i ma pozwolenie na kamerę.");
       }
     }
 
     async function stopScanning() {
       if (!scanning) return;
       try {
-        // przy stop warto zgasić torch, jeśli był
-        if (torchOn) {
-          try { await setTorch(false); } catch (_) {}
-        }
+        if (torchOn) { try { await setTorch(false); } catch (_) {} }
         await html5QrCode.stop();
       } catch (err) {
         console.error(err);
       } finally {
         torchOn = false;
         torchBtn.textContent = "Latarka: OFF";
+        videoInfoEl.textContent = "";
         setButtonsState(false);
         updateStatus("zatrzymano");
       }
     }
 
     async function resetScanner() {
-      if (!confirm("Zresetować skaner i usunąć wszystkie zapisane kody z tego telefonu?")) return;
-
-      if (scanning) {
-        try { await stopScanning(); } catch (_) {}
-      }
-
+      if (!confirm("Zresetować skaner i usunąć wszystkie zapisane kody?")) return;
+      if (scanning) await stopScanning();
       scannedCodes.clear();
-      try { localStorage.removeItem(STORAGE_KEY); } catch (e) { console.error(e); }
-
+      localStorage.removeItem(STORAGE_KEY);
       renderCodesList();
-      setButtonsState(false);
-      updateStatus("zresetowano (brak zapisanych kodów)");
-      alert("Skaner został zresetowany, wszystkie zapisane kody usunięte.");
+      updateStatus("zresetowano");
+      alert("Zresetowano – wszystkie kody usunięte.");
     }
 
-    // --- PODPIĘCIE PRZYCISKÓW ---
     startBtn.addEventListener("click", startScanning);
     stopBtn.addEventListener("click", stopScanning);
     clearBtn.addEventListener("click", clearCodes);
@@ -278,17 +283,17 @@
       await setTorch(!torchOn);
     });
 
+    infoBtn.addEventListener("click", showVideoInfo);
+
     window.addEventListener("beforeunload", () => { stopScanning(); });
 
-    // --- START: wczytaj zapisane kody ---
     loadFromLocalStorage();
     renderCodesList();
     updateStatus("nie skanuje (kody wczytane z pamięci)");
 
-    // --- Service Worker (offline dla Twoich plików) ---
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("./service-worker.js")
-        .then(reg => console.log("Service Worker OK:", reg.scope))
+        .then(reg => console.log("SW OK:", reg.scope))
         .catch(err => console.error("SW error:", err));
     }
   </script>
